@@ -133,6 +133,7 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
         state: StateT = None,
         deps: DepsT = None,
         infer_name: bool = True,
+        span: LogfireSpan | None = None,
     ) -> GraphRun[StateT, DepsT, T]:
         """Run the graph from a starting node until it ends.
 
@@ -142,6 +143,7 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
             state: The initial state of the graph.
             deps: The dependencies of the graph.
             infer_name: Whether to infer the graph name from the calling frame.
+            span: The span to use for the graph run. If not provided, a new span will be created.
 
         Returns:
             The result type from ending the run and the history of the run.
@@ -171,7 +173,13 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
             self._infer_name(inspect.currentframe())
 
         return GraphRun[StateT, DepsT, T](
-            self, start_node, history=[], state=state, deps=deps, auto_instrument=self._auto_instrument
+            self,
+            start_node,
+            history=[],
+            state=state,
+            deps=deps,
+            auto_instrument=self._auto_instrument,
+            span=span,
         )
 
     def run_sync(
@@ -514,17 +522,18 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
         state: StateT,
         deps: DepsT,
         auto_instrument: bool,
+        span: LogfireSpan | None = None,
     ):
         self.graph = graph
         self.history = history
         self.state = state
         self.deps = deps
         self._auto_instrument = auto_instrument
+        self._span = span
 
         self._next_node = first_node
         self._started: bool = False
         self._result: End[RunEndT] | None = None
-        self._span: LogfireSpan | None = None
 
     @property
     def is_ended(self):
@@ -568,8 +577,10 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
         if self._started:
             raise exceptions.GraphRuntimeError('A GraphRun can only be started once.')
 
-        if self._auto_instrument:
+        if self._auto_instrument and self._span is None:
             self._span = logfire_api.span('run graph {graph.name}', graph=self.graph)
+
+        if self._span is not None:
             self._span.__enter__()
 
         self._started = True
