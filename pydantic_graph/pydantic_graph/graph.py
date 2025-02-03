@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Callable, Generic, TypeVar
 import logfire_api
 import pydantic
 import typing_extensions
+from logfire_api import LogfireSpan
 
 from . import _utils, exceptions, mermaid
 from .nodes import BaseNode, DepsT, End, GraphRunContext, NodeDef, RunEndT
@@ -29,7 +30,7 @@ else:
     logfire._internal.stack_info.NON_USER_CODE_PREFIXES += (str(Path(__file__).parent.absolute()),)
 
 
-__all__ = ('Graph',)
+__all__ = ('Graph', 'GraphRun', 'GraphRunner')
 
 _logfire = logfire_api.Logfire(otel_scope='pydantic-graph')
 
@@ -132,7 +133,7 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
         state: StateT = None,
         deps: DepsT = None,
         infer_name: bool = True,
-    ) -> GraphRun[StateT, DepsT, T]:
+    ) -> GraphRunner[StateT, DepsT, T]:
         """Run the graph from a starting node until it ends.
 
         Args:
@@ -169,7 +170,9 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
         if infer_name and self.name is None:
             self._infer_name(inspect.currentframe())
 
-        return GraphRun[StateT, DepsT, T](self, start_node, state=state, deps=deps)
+        return GraphRunner[StateT, DepsT, T](
+            self, start_node, history=[], state=state, deps=deps, auto_instrument=self._auto_instrument
+        )
 
     def run_sync(
         self: Graph[StateT, DepsT, T],
@@ -496,18 +499,75 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
                         return
 
 
-class GraphRun(Generic[StateT, DepsT, RunEndT]):
+class GraphRunner(Generic[StateT, DepsT, RunEndT]):
+    """An object that can be awaited to perform a graph run.
+
+    This object can also be used as a contextmanager to get a handle to a specific graph run,
+    allowing you to iterate over nodes, and possibly perform modifications to the nodes as they are run.
+    """
+
     def __init__(
         self,
         graph: Graph[StateT, DepsT, RunEndT],
         first_node: BaseNode[StateT, DepsT, RunEndT],
+        *,
+        history: list[HistoryStep[StateT, RunEndT]],
+        state: StateT,
+        deps: DepsT,
+        auto_instrument: bool,
+    ):
+        self.graph = graph
+        self.first_node = first_node
+        self.history = history
+        self.state = state
+        self.deps = deps
+
+        self._auto_instrument = auto_instrument
+        self._span: LogfireSpan | None = None
+
+    def __await__(self) -> Generator[Any, Any, tuple[RunEndT, list[HistoryStep[StateT, RunEndT]]]]:
+        """Run the graph until it ends, and return the final result."""
+
+        async def _run() -> tuple[RunEndT, list[HistoryStep[StateT, RunEndT]]]:
+            async with self as run:
+                async for _next_node in run:
+                    pass
+
+                assert run.final_result is not None
+                return run.final_result.data, run.history
+
+        return _run().__await__()
+
+    async def __aenter__(self) -> GraphRun[StateT, DepsT, RunEndT]:
+        if self._auto_instrument:
+            self._span = logfire_api.span('run graph {graph.name}', graph=self.graph)
+            self._span.__enter__()
+
+        return GraphRun(self.graph, self.first_node, history=self.history, state=self.state, deps=self.deps)
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._span is not None:
+            self._span.__exit__(exc_type, exc_val, exc_tb)
+        self._span = None
+
+
+class GraphRun(Generic[StateT, DepsT, RunEndT]):
+    """A stateful run of a graph.
+
+    Can be used like an async generator to listen to / modify nodes as the run is executed.
+    """
+
+    def __init__(
+        self,
+        graph: Graph[StateT, DepsT, RunEndT],
+        next_node: BaseNode[StateT, DepsT, RunEndT],
         *,
         history: list[HistoryStep[StateT, RunEndT]] | None = None,
         state: StateT = None,
         deps: DepsT = None,
     ):
         self.graph = graph
-        self.next_node = first_node
+        self.next_node = next_node
         self.state = state
         self.deps = deps
 
@@ -529,18 +589,6 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
         else:
             self.next_node = next_node
         return next_node
-
-    def __await__(self) -> Generator[Any, Any, tuple[RunEndT, list[HistoryStep[StateT, RunEndT]]]]:
-        """Run the graph until it ends, and return the final result."""
-
-        async def _run():
-            async for _next_node in self:
-                pass
-
-            assert self.final_result is not None
-            return self.final_result.data, self.history
-
-        return _run().__await__()
 
     def __aiter__(self) -> AsyncIterator[BaseNode[StateT, DepsT, RunEndT] | End[RunEndT]]:
         return self
