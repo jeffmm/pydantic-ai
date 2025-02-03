@@ -606,6 +606,7 @@ async def main():
                 Ask(),
                 Answer(question='what is 1 + 1?', answer='2'),
                 Evaluate(answer='2'),
+                End(data='Well done, 1 + 1 = 2'),
             ]
             """
             return
