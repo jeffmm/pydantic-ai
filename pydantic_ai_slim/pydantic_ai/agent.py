@@ -337,12 +337,13 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
             )
 
             # Actually run
-            end_result, _ = await graph.run(
+            graph_run = await graph.run(
                 start_node,
                 state=state,
                 deps=graph_deps,
                 infer_name=False,
             )
+            end_result = graph_run.result
 
         # Build final run result
         # We don't do any advanced checking if the data is actually from a final result or not

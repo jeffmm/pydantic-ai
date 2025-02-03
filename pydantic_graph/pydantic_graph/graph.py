@@ -30,7 +30,7 @@ else:
     logfire._internal.stack_info.NON_USER_CODE_PREFIXES += (str(Path(__file__).parent.absolute()),)
 
 
-__all__ = ('Graph', 'GraphRun', 'GraphRunner')
+__all__ = ('Graph', 'GraphRun')
 
 _logfire = logfire_api.Logfire(otel_scope='pydantic-graph')
 
@@ -133,7 +133,7 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
         state: StateT = None,
         deps: DepsT = None,
         infer_name: bool = True,
-    ) -> GraphRunner[StateT, DepsT, T]:
+    ) -> GraphRun[StateT, DepsT, T]:
         """Run the graph from a starting node until it ends.
 
         Args:
@@ -153,24 +153,24 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
 
         async def main():
             state = MyState(1)
-            _, history = await never_42_graph.run(Increment(), state=state)
+            graph_run = await never_42_graph.run(Increment(), state=state)
             print(state)
             #> MyState(number=2)
-            print(len(history))
+            print(len(graph_run.history))
             #> 3
 
             state = MyState(41)
-            _, history = await never_42_graph.run(Increment(), state=state)
+            graph_run = await never_42_graph.run(Increment(), state=state)
             print(state)
             #> MyState(number=43)
-            print(len(history))
+            print(len(graph_run.history))
             #> 5
         ```
         """
         if infer_name and self.name is None:
             self._infer_name(inspect.currentframe())
 
-        return GraphRunner[StateT, DepsT, T](
+        return GraphRun[StateT, DepsT, T](
             self, start_node, history=[], state=state, deps=deps, auto_instrument=self._auto_instrument
         )
 
@@ -181,7 +181,7 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
         state: StateT = None,
         deps: DepsT = None,
         infer_name: bool = True,
-    ) -> tuple[T, list[HistoryStep[StateT, T]]]:
+    ) -> GraphRun[StateT, DepsT, T]:
         """Run the graph synchronously.
 
         This is a convenience method that wraps [`self.run`][pydantic_graph.Graph.run] with `loop.run_until_complete(...)`.
@@ -499,11 +499,10 @@ class Graph(Generic[StateT, DepsT, RunEndT]):
                         return
 
 
-class GraphRunner(Generic[StateT, DepsT, RunEndT]):
-    """An object that can be awaited to perform a graph run.
+class GraphRun(Generic[StateT, DepsT, RunEndT]):
+    """A stateful run of a graph.
 
-    This object can also be used as a contextmanager to get a handle to a specific graph run,
-    allowing you to iterate over nodes, and possibly perform modifications to the nodes as they are run.
+    After being entered, can be used like an async generator to listen to / modify nodes as the run is executed.
     """
 
     def __init__(
@@ -517,84 +516,25 @@ class GraphRunner(Generic[StateT, DepsT, RunEndT]):
         auto_instrument: bool,
     ):
         self.graph = graph
-        self.first_node = first_node
         self.history = history
         self.state = state
         self.deps = deps
-
-        self._run: GraphRun[StateT, DepsT, RunEndT] | None = None
-
         self._auto_instrument = auto_instrument
+
+        self._next_node = first_node
+        self._started: bool = False
+        self._result: End[RunEndT] | None = None
         self._span: LogfireSpan | None = None
 
     @property
-    def run(self) -> GraphRun[StateT, DepsT, RunEndT]:
-        if self._run is None:
-            raise exceptions.GraphRuntimeError('GraphRunner has not been awaited yet.')
-        return self._run
-
-    def __await__(self) -> Generator[Any, Any, tuple[RunEndT, list[HistoryStep[StateT, RunEndT]]]]:
-        """Run the graph until it ends, and return the final result."""
-
-        async def _run() -> tuple[RunEndT, list[HistoryStep[StateT, RunEndT]]]:
-            async with self as run:
-                self._run = run
-                async for _next_node in run:
-                    pass
-
-                return run.final_result, run.history
-
-        return _run().__await__()
-
-    async def __aenter__(self) -> GraphRun[StateT, DepsT, RunEndT]:
-        if self._run is not None:
-            raise exceptions.GraphRuntimeError('A GraphRunner can only start a GraphRun once.')
-
-        if self._auto_instrument:
-            self._span = logfire_api.span('run graph {graph.name}', graph=self.graph)
-            self._span.__enter__()
-
-        self._run = run = GraphRun(self.graph, self.first_node, history=self.history, state=self.state, deps=self.deps)
-        return run
-
-    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
-        if self._span is not None:
-            self._span.__exit__(exc_type, exc_val, exc_tb)
-        self._span = None  # make it more obvious if you try to use it after exiting
-
-
-class GraphRun(Generic[StateT, DepsT, RunEndT]):
-    """A stateful run of a graph.
-
-    Can be used like an async generator to listen to / modify nodes as the run is executed.
-    """
-
-    def __init__(
-        self,
-        graph: Graph[StateT, DepsT, RunEndT],
-        next_node: BaseNode[StateT, DepsT, RunEndT],
-        *,
-        history: list[HistoryStep[StateT, RunEndT]],
-        state: StateT,
-        deps: DepsT,
-    ):
-        self.graph = graph
-        self.next_node = next_node
-        self.history = history
-        self.state = state
-        self.deps = deps
-
-        self._final_result: End[RunEndT] | None = None
-
-    @property
     def is_ended(self):
-        return self._final_result is not None
+        return self._result is not None
 
     @property
-    def final_result(self) -> RunEndT:
-        if self._final_result is None:
+    def result(self) -> RunEndT:
+        if self._result is None:
             raise exceptions.GraphRuntimeError('GraphRun has not ended yet.')
-        return self._final_result.data
+        return self._result.data
 
     async def next(
         self: GraphRun[StateT, DepsT, T], node: BaseNode[StateT, DepsT, T]
@@ -607,16 +547,48 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
         next_node = await self.graph.next(node, history, state=state, deps=deps, infer_name=False)
 
         if isinstance(next_node, End):
-            self._final_result = next_node
+            self._result = next_node
         else:
-            self.next_node = next_node
+            self._next_node = next_node
         return next_node
+
+    def __await__(self) -> Generator[Any, Any, typing_extensions.Self]:
+        """Run the graph until it ends, and return the final result."""
+
+        async def _run() -> typing_extensions.Self:
+            with self:
+                async for _next_node in self:
+                    pass
+
+                return self
+
+        return _run().__await__()
+
+    def __enter__(self) -> typing_extensions.Self:
+        if self._started:
+            raise exceptions.GraphRuntimeError('A GraphRun can only be started once.')
+
+        if self._auto_instrument:
+            self._span = logfire_api.span('run graph {graph.name}', graph=self.graph)
+            self._span.__enter__()
+
+        self._started = True
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if self._span is not None:
+            self._span.__exit__(exc_type, exc_val, exc_tb)
+        self._span = None  # make it more obvious if you try to use it after exiting
 
     def __aiter__(self) -> AsyncIterator[BaseNode[StateT, DepsT, RunEndT] | End[RunEndT]]:
         return self
 
     async def __anext__(self) -> BaseNode[StateT, DepsT, RunEndT] | End[RunEndT]:
         """Use the last returned node as the input to `Graph.next`."""
-        if self._final_result:
+        if self._result:
             raise StopAsyncIteration
-        return await self.next(self.next_node)
+        if not self._started:
+            raise exceptions.GraphRuntimeError(
+                'You must enter the GraphRun as a contextmanager before you can iterate over it.'
+            )
+        return await self.next(self._next_node)
