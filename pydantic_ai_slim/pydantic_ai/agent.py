@@ -203,7 +203,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
                 self._register_tool(Tool(tool))
 
     @overload
-    async def run(
+    def run(
         self,
         user_prompt: str,
         *,
@@ -218,7 +218,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
     ) -> AgentRun[AgentDepsT, ResultDataT]: ...
 
     @overload
-    async def run(
+    def run(
         self,
         user_prompt: str,
         *,
@@ -232,7 +232,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
         infer_name: bool = True,
     ) -> AgentRun[AgentDepsT, ResultDataT]: ...
 
-    async def run(
+    def run(
         self,
         user_prompt: str,
         *,
@@ -276,7 +276,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
         """
         if infer_name and self.name is None:
             self._infer_name(inspect.currentframe())
-        model_used = await self._get_model(model)
+        model_used = self._get_model(model)
 
         deps = self._get_deps(deps)
         new_message_index = len(message_history) if message_history else 0
@@ -337,9 +337,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
         )
 
         # Actually run
-        # TODO: Make this method non-async and remove the next await
-        #   That way, users can decide whether to "await" the run, or iterate over it
-        return await AgentRun(
+        return AgentRun(
             graph.run(
                 start_node,
                 state=state,
@@ -515,7 +513,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
             # f_back because `asynccontextmanager` adds one frame
             if frame := inspect.currentframe():  # pragma: no branch
                 self._infer_name(frame.f_back)
-        model_used = await self._get_model(model)
+        model_used = self._get_model(model)
 
         deps = self._get_deps(deps)
         new_message_index = len(message_history) if message_history else 0
@@ -966,7 +964,7 @@ class Agent(Generic[AgentDepsT, ResultDataT]):
 
         self._function_tools[tool.name] = tool
 
-    async def _get_model(self, model: models.Model | models.KnownModelName | None) -> models.Model:
+    def _get_model(self, model: models.Model | models.KnownModelName | None) -> models.Model:
         """Create a model configured for this agent.
 
         Args:
