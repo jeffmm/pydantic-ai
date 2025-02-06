@@ -542,7 +542,15 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
     @property
     def result(self) -> RunEndT:
         if self._result is None:
-            raise exceptions.GraphRuntimeError('GraphRun has not ended yet.')
+            if self._started:
+                raise exceptions.GraphRuntimeError(
+                    'This GraphRun has not yet ended. Continue iterating with `async for` or `GraphRun.next`'
+                    ' to complete the run before accessing the result.'
+                )
+            else:
+                raise exceptions.GraphRuntimeError(
+                    'This GraphRun has not been started. Did you forget to `await` the run?'
+                )
         return self._result.data
 
     async def next(
