@@ -1124,7 +1124,7 @@ class AgentRun(Generic[AgentDepsT, ResultDataT]):
         raise LookupError(f'No tool call found with tool name {self.result.tool_name!r}.')
 
     @property
-    def is_ended(self):
+    def is_ended(self) -> bool:
         return self.graph_run.is_ended
 
     @property

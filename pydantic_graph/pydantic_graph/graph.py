@@ -536,7 +536,7 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
         self._result: End[RunEndT] | None = None
 
     @property
-    def is_ended(self):
+    def is_ended(self) -> bool:
         return self._result is not None
 
     @property
@@ -557,6 +557,11 @@ class GraphRun(Generic[StateT, DepsT, RunEndT]):
         self: GraphRun[StateT, DepsT, T], node: BaseNode[StateT, DepsT, T]
     ) -> BaseNode[StateT, DepsT, T] | End[T]:
         """Note: this method behaves very similarly to an async generator's `asend` method."""
+        if not self._started:
+            raise exceptions.GraphRuntimeError(
+                'You must enter the GraphRun as a contextmanager before you can call `next` on it.'
+            )
+
         history = self.history
         state = self.state
         deps = self.deps
