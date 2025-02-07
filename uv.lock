@@ -2793,7 +2793,7 @@ wheels = [
 
 [[package]]
 name = "pydantic-graph"
-version = "0.0.23dev"
+version = "0.0.23-dev0"
 source = { editable = "pydantic_graph" }
 dependencies = [
     { name = "httpx" },
